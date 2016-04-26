@@ -1,5 +1,6 @@
 #!/bin/bash
 
+# 20160426  5.0  vegivamp  Update for api v3.
 # imgur script by Bart Nagel <bart@tremby.net>
 # version 4
 # I release this into the public domain. Do with it what you will.
@@ -14,9 +15,6 @@
 # 	mv ~/Downloads/imgurbash.sh ~/bin/imgur
 # Make it executable:
 # 	chmod +x ~/bin/imgur
-# Optional, since Alan kindly provided an API key for this script: stick your 
-# API key in the top:
-# 	vim ~/bin/imgur
 # Upload an image:
 # 	imgur images/hilarious/manfallingover.jpg
 # Upload multiple images:
@@ -25,10 +23,15 @@
 # stderr). If you have xsel or xclip the URLs will also be put on the X 
 # selection, which you can usually paste with a middle click.
 
-# API Key provided by Alan@imgur.com
-apikey="b3625162d3418ac51a9ee805b1840452"
 
-# function to output usage instructions
+# Since image delete is a DELETE request in api v3, we no longer print that by default.
+# Turn on printing of delete commandlines (NOT just URLs!) by setting showdelete=1
+showdelete=0
+
+# Client ID
+clientid='ec144c406a59670'
+
+# Function to output usage instructions
 function usage {
 	echo "Usage: $(basename $0) <filename> [<filename> [...]]" >&2
 	echo "Upload images to imgur and output their new URLs to stdout. Each one's" >&2
@@ -37,8 +40,19 @@ function usage {
 	echo "easy pasting." >&2
 }
 
-# check API key has been entered
-if [ "$apikey" = "Your API key" ]; then
+# Function that returns the value of a single JSON element.
+# Overly simplistic, but prevents more dependencies.
+function jsonvalue {
+  input="$1"; shift
+  key="$1";   shift
+  
+  echo "$input" | sed " s/^.*[{,]\"${key}\":\"\?//;
+                        s/\"\?[,}].*$//;
+                        s/\\\\\//\//g;"
+}
+
+# check client ID has been entered
+if [ "$clientid" = "Your client ID" ]; then
 	echo "You first need to edit the script and put your API key in the variable near the top." >&2
 	exit 15
 fi
@@ -75,36 +89,39 @@ while [ $# -gt 0 ]; do
 	fi
 
 	# upload the image
-	response=$(curl -F "key=$apikey" -H "Expect: " -F "image=@$file" \
-		http://imgur.com/api/upload.xml 2>/dev/null)
-	# the "Expect: " header is to get around a problem when using this through 
-	# the Squid proxy. Not sure if it's a Squid bug or what.
+	response=$(curl -H "Authorization: Client-ID $clientid" -F "image=@$file" \
+		https://api.imgur.com/3/upload 2>/dev/null)
 	if [ $? -ne 0 ]; then
 		echo "Upload failed" >&2
 		errors=true
 		continue
-	elif [ $(echo $response | grep -c "<error_msg>") -gt 0 ]; then
-		echo "Error message from imgur:" >&2
-		echo $response | sed -r 's/.*<error_msg>(.*)<\/error_msg>.*/\1/' >&2
+	elif [ $(jsonvalue "$response" 'status') -ne '200' ]; then
+		echo -n "Error message from imgur: " >&2
+		jsonvalue "$response" 'error' >&2
 		errors=true
 		continue
 	fi
 
 	# parse the response and output our stuff
-	url=$(echo $response | sed -r 's/.*<original_image>(.*)<\/original_image>.*/\1/')
-	deleteurl=$(echo $response | sed -r 's/.*<delete_page>(.*)<\/delete_page>.*/\1/')
+        url=$(jsonvalue "$response" 'link')
 	echo $url
-	echo "Delete page: $deleteurl" >&2
+
+        if [ $showdelete -eq 1 ]; then
+          deletehash=$(jsonvalue "$response" 'deletehash')
+          echo "Delete command:" >&2
+          echo -n "    curl -XDELETE -H 'Authorization: Client-ID " >&2
+          echo -n $clientid >&2
+          echo -n "' https://api.imgur.com/3/image/${deletehash}" >&2
+        fi
 
 	# append the URL to a string so we can put them all on the clipboard later
-	clip="$clip$url
-"
+	clip="$clip$url\n"
 done
 
 # put the URLs on the clipboard if we have xsel or xclip
 if [ $DISPLAY ]; then
-	{ type xsel >/dev/null 2>/dev/null && echo -n $clip | xsel; } \
-		|| { type xclip >/dev/null 2>/dev/null && echo -n $clip | xclip; } \
+	{ type xsel >/dev/null 2>/dev/null && echo -ne "$clip" | xsel; } \
+		|| { type xclip >/dev/null 2>/dev/null && echo -ne "$clip" | xclip; } \
 		|| echo "Haven't copied to the clipboard: no xsel or xclip" >&2
 else
 	echo "Haven't copied to the clipboard: no \$DISPLAY" >&2
